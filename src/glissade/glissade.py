@@ -8,118 +8,8 @@ import warnings
 import matplotlib.pyplot as plt
 from scipy.stats import binomtest
 
-warnings.filterwarnings("ignore")
-
-def read_data(db_file : str, denovo_file : str):
-  """
-  Read in database search results and de novo results and join 
-  results on scan ID. 
-
-  Parameters
-  ----------
-  db_file: string containing the path to the database search results file. 
-  denovo_file: string containing the path to the denovo results file. 
-
-  Returns
-  -------
-  joined_df: a combined dataframe containing the de novo and database 
-              search result for each scan
-  """
-  if 'psms.txt' in db_file:
-    db_df = pd.read_csv(db_file, sep='\t')
-    db_scans = [int(x.split('_')[2]) for x in db_df['PSMId']]
-    db_df['scan'] = db_scans
-  else:
-    #FIXME handle other search results
-    pass
-
-  if '.mztab' in denovo_file:
-    with open(denovo_file) as f_in:
-      for skiprows, line in enumerate(f_in):
-          if line.startswith("PSH"):
-              break
-    denovo_df = pd.read_csv(denovo_file, sep='\t', skiprows=skiprows)
-    dn_scans = [int(x.split('scan=')[1].split('\t')[0]) for x in denovo_df['spectra_ref']]
-    denovo_df['scan'] = dn_scans
-    denovo_df = denovo_df.rename(columns={'search_engine_score[1]': 'denovo_score', 'sequence': 'denovo_peptide'})
-
-  else:
-    #FIXME handle other denovo result formats
-    pass
-
-  joined_df = pd.merge(db_df, denovo_df, on='scan', how='inner')
-  joined_df.sort_values(by="denovo_score", ascending=False, inplace=True)
-
-  return joined_df
-
-def align_to_reference(results_df : pd.DataFrame, reference_file : str, database_fdr_threshold : float = 0.01):
-  """
-  Annotate the database search and denovo results based on whether they agree and whether the 
-  de novo peptide is in the reference
-
-  Parameters
-  ----------
-  results_df: a pandas dataframe containing the de novo and database 
-              search result for each scan
-  reference_file: a string containing the path to a reference FASTA
-  database_fdr_threshold: optional float describing what FDR threshold to apply to database 
-              search results (default 0.01)
-
-  Returns
-  -------
-  results_df: a dataframe containing the de novo and database search result for each scan
-              annotated based on agreement and whether each prediction is in the reference 
-  """
-  all_prots_string = ''
-  with open(reference_file) as f_in:
-      for line in f_in:
-          if not line[0] == '>':
-              all_prots_string += line[:-1].replace('I','L')
-          else:
-              all_prots_string += '$'
-  in_tide = [x < database_fdr_threshold for x in results_df['q-value']]
-
-  db_peps = [''.join([i for i in re.sub(r'\[.*?\]', '', x[2:-2]) if i.isalpha()]).replace('I','L') for x in results_df['peptide']]
-  denovo_peps = [''.join([i for i in re.sub(r'\[.*?\]', '', x) if i.isalpha()]).replace('I','L') for x in results_df['denovo_peptide']]
-  agrees = [x == y for x,y in zip(db_peps, denovo_peps)]
-
-  in_reference = [x in all_prots_string for x in denovo_peps]
-
-  results_df['in_reference'] = in_reference
-  results_df['in_tide'] = in_tide
-  results_df['agrees'] = agrees
-  return results_df
-
-def seperate_scores(labeled_df : pd.DataFrame, min_length : int = 8):
-  """
-  Extract lists of matched scores and external scores to run the FDR control procedure on.
-
-  Parameters
-  ----------
-  results_df: A pandas dataframe with columns labeling whether each de novo prediction is for a 
-              scan identified by database search, agrees with database search, and is in the reference.  
-  min_length: Optional int specifying the minimum length of peptides to consider this should be large 
-              enough to make random matches to the database unlikely (default 8). 
-
-  Returns
-  -------
-  matched_scores: A list of de novo scores corresponding to matched peptides
-  external_scores: A list of de novo scores corresponding to external peptides 
-  external_peps: A list containing the peptides corresponding to external scores for reporting 
-                 the final list of discoveries
-  """
-  matched_df = labeled_df[labeled_df['in_tide'] & labeled_df['agrees'] & (labeled_df['denovo_score'] > 0)]
-  external_df = labeled_df[~labeled_df['in_tide'] & ~labeled_df['in_reference'] & (labeled_df['denovo_score'] > 0)]
-
-  matched_df = matched_df[matched_df['denovo_peptide'].apply(lambda x: len(x) >= min_length)]
-  external_df = external_df[external_df['denovo_peptide'].apply(lambda x: len(x) >= min_length)]
-
-  matched_peps = matched_df.groupby('denovo_peptide')['denovo_score'].max()
-  external_peps = external_df.groupby('denovo_peptide')['denovo_score'].max()
-
-  matched_scores =  np.log(matched_peps.values)
-  external_scores =  np.log(external_peps.values)
-  return matched_scores, external_scores, list(external_peps.index)
+from preprocessing import read_data, align_to_reference, seperate_scores
+from pava import alpha_minimize, mixture_sanity_check, _ecdf_on_grid
 
 def find_minima_sig(external_score_sample : np.array, matched_scores : np.array):
   """
@@ -175,239 +65,49 @@ def find_minima_sig(external_score_sample : np.array, matched_scores : np.array)
        right_bin_edge = current_interval[-index]
        current_interval = current_interval[index:-index]
 
-def compute_windows(external_score_sample : np.array, x_0 : float, n_w : int, step_size : int, plot_figs = False):
-  """
-  Compute windows of equal probability mass between the crossover point x_0 and the max score  
+def run_procedure(alt, x_mix, peps, n_boots = 250):
+    x0 = -0.04
+    x0 = find_minima_sig(x_mix, alt)
+    print("Inferred x0:", x0)
 
-  Parameters
-  ----------
-  external_score_sample: A sorted array of de novo scores for external peptides
-  x_0: The crossover point 
-  n_w: The number of samples each window will contain 
-  step_size: The step size in number of samples between adjacent windows
-  plot_figs: Optional flag for whether to plot the resulting windows (default False)
-
-  Returns
-  -------
-  windows: A list of tuples containing the start and end score for each window
-  """
-  external_score_sample = [x for x in external_score_sample if x > 2*x_0]
-  N_e = len(external_score_sample)
-  
-  windows = []
-  for i in range(N_e - 1, n_w, -step_size):
-    s_i = external_score_sample[i]
-
-    window_start = None 
-    window_end = None 
-    best_width = np.inf
-
-    for start in range(i-n_w, min(N_e - n_w,i)):
-      width = external_score_sample[start + n_w] - external_score_sample[start]
-      if width < best_width:
-        best_width = width 
-        window_start = external_score_sample[start]
-        window_end = external_score_sample[start + n_w] 
+    alpha_lo0, alpha_hi0 = 0.01, 0.99 
+    alpha_hat, H_hat, grid_x, info = alpha_minimize(x_mix, alt, x0, alpha_tol=2e-3, tol_mode='bootstrap',  
+                                                    B=n_boots, per_check_delta=0.05,  max_checks=30, random_state=1966, 
+                                                    initial_bracket=(alpha_lo0, alpha_hi0), verbose=False)
     
-    if (window_start,window_end) not in windows:
-      windows.append((window_start,window_end))
+    print("Inferred pi_0:", 1-alpha_hat)
+    
+    Gm = _ecdf_on_grid(np.sort(alt), grid_x)
+    Fn = _ecdf_on_grid(np.sort(x_mix), grid_x)
+    res = mixture_sanity_check(Fn, Gm, H_hat, alpha_hat, grid_x, mode='bootstrap', delta=0.05, B=400, rng=np.random.default_rng(7))
+    print(f"\n[mixture check] D_ks={res['D_ks']:.4g}  crit={res['crit']:.4g}  "
+        f"{'(PASS)' if res['pass_test'] else '(FAIL)'}"
+        f"{'' if res.get('p_value') is None else f'  p≈{res['p_value']:.3f}'}\n")
+    
 
-    if s_i <= x_0:
-      break
-  
-  if plot_figs:
-    for i,(start,stop) in enumerate(windows):
-      plt.plot([start,stop],[i,i])
-    plt.show()
+    emp_correct = alt
 
-  return windows
+    fdrs = []
+    scores = []
+    ordered_peps = []
+    total = 0
+    num_correct = 1
+    for score,pep in zip(x_mix[::-1], peps[::-1]):
+        total += 1
 
-   
-def estimate_pi0(matched_scores : np.array, windows : list[tuple[float,float]], n_w : int, N_e : int, plot_figs = False):
-  """
-  Estimate the mixing parameter pi_0 using the empirical matched score distribution. 
-  Samples from the matched_scores are subtracted from the external score distribution
-  until all of the windows satisfy the condition that the density at x_0 is higher 
-  than the density for all scores x > x_0. 
+        while num_correct < len(emp_correct) and score <= emp_correct[-num_correct]:
+            num_correct += 1
+        
+        true_count_hat = ((num_correct-1) / len(emp_correct)) * ((alpha_hat) * len(x_mix))
 
-  Parameters
-  ----------
-  matched_scores: A sorted array of de novo scores for matched peptides
-  windows: A list of tuples containing the start and end score for each equal density window
-           in the external scores
-  n_w: The number of external samples in each window 
-  N_e: The total number of external scores
-  plot_figs: Optional flag for whether to plot the resulting windows (default False)
-
-  Returns
-  -------
-  est_pi_0: The inferred mixing paramater pi_0
-  matched_sample: The corresponding sample from the matched score distribution
-  """
-  counts = np.array([n_w] * len(windows))
-  widths = np.array([end - start for start,end in windows])
-  matched_sample = []
-  while min(counts) >= 1:
-    if max([counts[i]/widths[i] - counts[-1]/widths[-1] for i in range(len(counts))]) <= 0:
-      break
-    sample = np.random.choice(matched_scores, 1)[0]
-    matched_sample.append(sample)
-    for i, (window_start, window_end) in enumerate(windows):
-      if sample >= window_start and sample <= window_end:
-        counts[i] -= 1
-      elif sample > window_end:
-        break
-  matched_sample = sorted(matched_sample)
-
-  if plot_figs:
-    for i in range(len(counts)):
-        plt.plot([windows[i][0], windows[i][1]], [counts[i]/widths[i], counts[i]/widths[i]])
-    plt.show()
-
-  est_pi_0 = 1 - len(matched_sample)/N_e
-  return est_pi_0, matched_sample
-
-def estimate_fdr(matched_sample, external_score_sample, grid):
-  """
-  Infer the FDR at each score threshold based on the list of external scores and a corresponding 
-  matched sample obtained from estimating pi_0
-
-  Parameters
-  ----------
-  matched_sample: A list of matched scores with size (1 - pi_0) * len(external_score_sample)  
-  external_score_sample: The list of external scores
-  grid: An array of score thresholds to calculate the corresponding FDR for 
-
-  Returns
-  -------
-  qs: A list of q-values corresponding to each score threshold in the grid
-  """
-  qs = []
-  denom = 1
-  numer = 1
-  for i in range(len(grid)-1, -1, -1):
-    s_i = grid[i]
-    while denom < len(external_score_sample) and external_score_sample[-denom] >= s_i:
-      denom += 1
-    while numer < len(matched_sample) and matched_sample[-numer] >= s_i:
-      numer += 1
-    if denom > 1:
-      q = max((denom - numer) / (denom), 0)
-    else:
-      q = np.nan
-    qs.append(q)
-
-  return qs
-
-def run_procedure(matched_scores, external_score_sample, grid, plot_figs = False):
-  """
-  Runs one iteration of the FDR control procedure for a given bootstrap sample of the external scores. 
-
-  Parameters
-  ----------
-  matched_scores: A list of matched scores
-  external_score_sample: A list containing a bootstrapped sample of the external scores
-  grid: An array of score thresholds to calculate the corresponding FDR for 
-  plot_figs: Optional flag for whether to plot the resulting windows (default False)
-
-  Returns
-  -------
-  fdrs: A list of q-values corresponding to each score threshold in the grid
-  est_pi_0: The estimated mixing parameter pi_0
-  """
-  external_score_sample = sorted(external_score_sample)
-  
-  x_0 = find_minima_sig(external_score_sample, matched_scores)
-  #print(f"Crossover point identified at: {x_0}")
-
-  if(plot_figs):
-    plt.hist([x for x in external_score_sample if x > -5], bins=100)
-    plt.xlabel('Log de novo score')
-    plt.xlim([-.5,0])
-    plt.ylabel('Density')
-    plt.title('External scores')
-    plt.show()
-
-    plt.hist([x for x in matched_scores if x > -5], bins=100)
-    plt.xlabel('Log de novo score')
-    plt.xlim([-.5,0])
-    plt.ylabel('Density')
-    plt.title('Matched scores')
-    plt.show()
-
-  N_e = len(external_score_sample)
-  n_w = int(len([x for x in external_score_sample if x >= x_0])/4)
-  step_size = 2 #int(n_w/2)
-  windows = compute_windows(external_score_sample, x_0, n_w, step_size, plot_figs)
-
-  est_pi_0, matched_sample = estimate_pi0(matched_scores, windows, n_w, N_e, plot_figs)
-  fdrs = estimate_fdr(matched_sample, external_score_sample, grid)
-
-  return list(reversed(fdrs)), est_pi_0
-
-def run_bootstraps(matched_scores, external_scores, n_bootstraps = 10, plot_figs = False):
-  """
-  Runs many iterations of the FDR control procedure for bootstrapped samples of the external scores
-
-  Parameters
-  ----------
-  matched_scores: A list of matched scores
-  external_scores: A list of external scores
-  n_bootstraps: The number of bootstraps to perform 
-  plot_figs: Optional flag for whether to plot the resulting windows (default False)
-
-  Returns
-  -------
-  all_fdrs: A list of q-values corresponding to each score threshold in the grid for each of the bootstrap iterations
-  grid: The array of score thresholds which the FDR was calculated on 
-  all_pi0s: A list of the inferred pi_0 for each bootstrap
-  """
-  all_fdrs = []
-  all_pi0s = []
-  grid = np.linspace(min(external_scores), 0, 10000)
-  for _ in range(n_bootstraps):
-    external_score_sample = np.random.choice(external_scores, size=len(external_scores), replace=True)
-    fdrs, est_pi_0 = run_procedure(matched_scores, external_score_sample, grid, plot_figs)
-    all_fdrs.append(fdrs)
-    all_pi0s.append(est_pi_0)
-  print("Average estimated pi_0:", np.mean(all_pi0s))
-
-  return all_fdrs, grid, all_pi0s
-
-def annotate_results(external_peps, external_scores, fdrs, grid):
-  """
-  Assign the corresponding q-value to the score threshold at which each 
-  external peptide would be accepted
-
-  Parameters
-  ----------
-  external_peps: A list of external peptides sequences
-  external_scores: A list of scores assigned to each external peptide
-  fdrs: A list of q-values corresponding to each score threshold in the grid
-  grid: The array of score thresholds which the FDR was calculated on 
-
-  Returns
-  -------
-  peptides: A list of external peptides sequences sorted by score
-  peptide_fdrs: The corresponding FDR for the score threshold at which each peptide is accepted
-  scores: A sorted list of scores for the external peptides
-  """
-  fdrs = np.maximum(np.nanmean(fdrs, axis=0), 0)
-  sidxs = np.argsort(external_scores)
-  sorted_external_scores = external_scores[sidxs]
-  sorted_external_peps = np.array(external_peps)[sidxs]
-  cur_grid_idx = 0
-  peptide_fdrs = []
-  peptides = []
-  scores = []
-  for score,pep in zip(sorted_external_scores, sorted_external_peps):
-      while score > grid[cur_grid_idx]:
-        cur_grid_idx += 1
-      peptide_fdrs.append(fdrs[cur_grid_idx])
-      peptides.append(pep)
-      scores.append(score)
-  
-  return peptides, peptide_fdrs, scores
+        scores.append(score)
+        ordered_peps.append(pep)
+        fdr = (total-true_count_hat) / (total)
+        if fdr < 0:
+            fdr += 10
+        fdrs.append(fdr)
+    
+    return fdrs[::-1], ordered_peps[::-1], scores[::-1]
 
 def compute_fdr_transform(fdrs):
   """
@@ -463,7 +163,11 @@ def main():
   print(f"Total matched scores: {len(matched_scores)}")
   
   print(f"Performing FDR control on {len(external_scores)} external peptides from de novo sequencing")
-  fdrs, grid, _ = run_bootstraps(matched_scores, external_scores, n_bootstraps = n_bootstraps, plot_figs=False)
-  peptides, peptide_fdrs, scores = annotate_results(external_peps, external_scores, fdrs, grid)
-  peptide_fdrs = compute_fdr_transform(peptide_fdrs)
-  write_results(peptides, peptide_fdrs, scores)
+  fdrs, peps, scores = run_procedure(matched_scores, external_scores, external_peps, n_boots = 250)
+  fdrs = compute_fdr_transform(fdrs)
+  write_results(peps, fdrs, scores)
+  
+  # fdrs, grid, _ = run_bootstraps(matched_scores, external_scores, n_bootstraps = n_bootstraps, plot_figs=False)
+  # peptides, peptide_fdrs, scores = annotate_results(external_peps, external_scores, fdrs, grid)
+  # peptide_fdrs = compute_fdr_transform(peptide_fdrs)
+  # write_results(peptides, peptide_fdrs, scores)
