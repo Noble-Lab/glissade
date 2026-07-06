@@ -30,6 +30,8 @@ def read_data(db_file : str, denovo_file : str):
     db_scans = [int(x.split('_')[2]) for x in db_df['PSMId']]
     db_df['scan'] = db_scans
     # Use the filename column for file identity (supports multi-file analyses)
+    if 'filename' not in db_df.columns:
+      raise ValueError("Percolator psms.txt is missing the 'filename' column required for multi-file joining")
     db_df['file_stem'] = db_df['filename'].apply(lambda x: os.path.splitext(os.path.basename(str(x)))[0])
   else:
     #FIXME handle other search results
@@ -38,6 +40,7 @@ def read_data(db_file : str, denovo_file : str):
   if '.mztab' in denovo_file:
     # Build ms_run -> file stem mapping from MTD header
     run_map = {}
+    skiprows = 0
     with open(denovo_file) as f_in:
       for skiprows, line in enumerate(f_in):
           if line.startswith("PSH"):
@@ -71,6 +74,12 @@ def read_data(db_file : str, denovo_file : str):
 
   print(f"  Percolator PSMs: {len(db_df)}")
   print(f"  Casanovo PSMs:   {len(denovo_df)}")
+
+  db_stems = set(db_df['file_stem'].unique())
+  dn_stems = set(denovo_df['file_stem'].unique()) if 'file_stem' in denovo_df.columns else set()
+  unmatched = db_stems.symmetric_difference(dn_stems)
+  if unmatched:
+    print(f"  Warning: {len(unmatched)} file stem(s) present in only one input: {sorted(unmatched)}")
 
   joined_df = pd.merge(db_df, denovo_df, on=['file_stem', 'scan'], how='inner')
   joined_df.sort_values(by="denovo_score", ascending=False, inplace=True)
