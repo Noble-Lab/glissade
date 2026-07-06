@@ -1,18 +1,19 @@
+import os
 import pandas as pd
 import numpy as np
-import re 
+import re
 import pickle
 import sys
 import argparse
-import warnings 
+import warnings
 import matplotlib.pyplot as plt
 
 warnings.filterwarnings("ignore")
 
 def read_data(db_file : str, denovo_file : str):
   """
-  Read in database search results and de novo results and join 
-  results on scan ID. 
+  Read in database search results and de novo results and join
+  results on (file_stem, scan) to support multi-file analyses.
 
   Parameters
   ----------
@@ -29,7 +30,6 @@ def read_data(db_file : str, denovo_file : str):
     db_scans = [int(x.split('_')[2]) for x in db_df['PSMId']]
     db_df['scan'] = db_scans
     # Use the filename column for file identity (supports multi-file analyses)
-    import os
     db_df['file_stem'] = db_df['filename'].apply(lambda x: os.path.splitext(os.path.basename(str(x)))[0])
   else:
     #FIXME handle other search results
@@ -46,8 +46,14 @@ def read_data(db_file : str, denovo_file : str):
           if m:
               run_map[m.group(1)] = os.path.splitext(os.path.basename(m.group(2).replace('file://', '').strip()))[0]
     denovo_df = pd.read_csv(denovo_file, sep='\t', skiprows=skiprows)
-    dn_scans = [int(x.split('scan=')[1].split('\t')[0]) for x in denovo_df['spectra_ref']]
-    dn_stems = [run_map.get(re.match(r'(ms_run\[\d+\])', x).group(1), '') for x in denovo_df['spectra_ref']]
+    def _parse_scan(ref):
+      m = re.search(r'scan=(\d+)', ref)
+      return int(m.group(1)) if m else None
+    def _parse_stem(ref):
+      m = re.match(r'(ms_run\[\d+\])', ref)
+      return run_map.get(m.group(1), '') if m else ''
+    dn_scans = [_parse_scan(x) for x in denovo_df['spectra_ref']]
+    dn_stems = [_parse_stem(x) for x in denovo_df['spectra_ref']]
     denovo_df['scan'] = dn_scans
     denovo_df['file_stem'] = dn_stems
     denovo_df = denovo_df.rename(columns={'search_engine_score[1]': 'denovo_score', 'sequence': 'denovo_peptide'})
@@ -94,15 +100,18 @@ def align_to_reference(results_df : pd.DataFrame, reference_file : str, database
   n_in_tide = sum(in_tide)
   print(f"  FDR threshold: {database_fdr_threshold}")
   n_total = len(results_df)
-  print(f"  Percolator PSMs passing FDR: {n_in_tide} / {n_total} ({100*n_in_tide/n_total:.1f}%)")
+  pct = f"{100*n_in_tide/n_total:.1f}%" if n_total > 0 else "N/A"
+  print(f"  Percolator PSMs passing FDR: {n_in_tide} / {n_total} ({pct})")
 
   db_peps = [''.join([i for i in re.sub(r'\[.*?\]', '', x[2:-2]) if i.isalpha()]).replace('I','L') for x in results_df['peptide']]
   denovo_peps = [''.join([i for i in re.sub(r'\[.*?\]', '', x) if i.isalpha()]).replace('I','L') for x in results_df['denovo_peptide']]
   agrees = [x == y for x,y in zip(db_peps, denovo_peps)]
   n_agrees = sum(agrees)
   n_both = sum(a and b for a, b in zip(in_tide, agrees))
-  print(f"  PSMs where Casanovo and Percolator agree: {n_agrees} / {n_total} ({100*n_agrees/n_total:.1f}%)")
-  print(f"  PSMs passing FDR and agreeing: {n_both} / {n_in_tide} ({100*n_both/n_in_tide:.1f}% of FDR-passing)")
+  pct_agrees = f"{100*n_agrees/n_total:.1f}%" if n_total > 0 else "N/A"
+  pct_both = f"{100*n_both/n_in_tide:.1f}%" if n_in_tide > 0 else "N/A"
+  print(f"  PSMs where Casanovo and Percolator agree: {n_agrees} / {n_total} ({pct_agrees})")
+  print(f"  PSMs passing FDR and agreeing: {n_both} / {n_in_tide} ({pct_both} of FDR-passing)")
 
   in_reference = [x in all_prots_string for x in denovo_peps]
 
@@ -140,16 +149,20 @@ def seperate_scores(labeled_df : pd.DataFrame, min_length : int = 8):
   matched_df = matched_df[matched_df['denovo_peptide'].apply(lambda x: len(x) >= min_length)]
   external_df = external_df[external_df['denovo_peptide'].apply(lambda x: len(x) >= min_length)]
 
-  print(f"  Matched PSMs after min_length={min_length} filter: {len(matched_df)} / {n_matched_raw} ({100*len(matched_df)/n_matched_raw:.1f}%)")
-  print(f"  External PSMs after min_length={min_length} filter: {len(external_df)} / {n_external_raw} ({100*len(external_df)/n_external_raw:.1f}%)")
+  n_matched_filt = len(matched_df)
+  n_external_filt = len(external_df)
+  pct_m = f"{100*n_matched_filt/n_matched_raw:.1f}%" if n_matched_raw > 0 else "N/A"
+  pct_e = f"{100*n_external_filt/n_external_raw:.1f}%" if n_external_raw > 0 else "N/A"
+  print(f"  Matched PSMs after min_length={min_length} filter: {n_matched_filt} / {n_matched_raw} ({pct_m})")
+  print(f"  External PSMs after min_length={min_length} filter: {n_external_filt} / {n_external_raw} ({pct_e})")
 
   matched_peps = matched_df.groupby('denovo_peptide')['denovo_score'].max()
   external_peps = external_df.groupby('denovo_peptide')['denovo_score'].max()
 
-  n_matched_filt = len(matched_df)
-  n_external_filt = len(external_df)
-  print(f"  Unique matched peptide sequences: {len(matched_peps)} / {n_matched_filt} ({100*len(matched_peps)/n_matched_filt:.1f}%)")
-  print(f"  Unique external peptide sequences: {len(external_peps)} / {n_external_filt} ({100*len(external_peps)/n_external_filt:.1f}%)")
+  pct_um = f"{100*len(matched_peps)/n_matched_filt:.1f}%" if n_matched_filt > 0 else "N/A"
+  pct_ue = f"{100*len(external_peps)/n_external_filt:.1f}%" if n_external_filt > 0 else "N/A"
+  print(f"  Unique matched peptide sequences: {len(matched_peps)} / {n_matched_filt} ({pct_um})")
+  print(f"  Unique external peptide sequences: {len(external_peps)} / {n_external_filt} ({pct_ue})")
 
   matched_scores =  np.log(matched_peps.values)
   external_scores =  np.log(external_peps.values)
