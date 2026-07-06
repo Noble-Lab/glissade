@@ -171,6 +171,10 @@ def main():
     json.dump({'n_matched': len(matched_scores), 'n_external': len(external_scores)}, f)
 
   print(f'--- Running FDR control on {len(external_scores)} external peptides using {len(matched_scores)} matched scores ---')
+  if len(matched_scores) == 0:
+    raise ValueError("No matched peptides found for calibration. Try lowering --fdr or checking that Casanovo and Percolator inputs overlap.")
+  if len(external_scores) == 0:
+    raise ValueError("No external peptides found. Nothing to score.")
   fdrs, peps, scores = run_procedure(matched_scores, external_scores, external_peps, n_boots=n_bootstraps)
   fdrs = compute_fdr_transform(fdrs)
   write_results(peps, fdrs, scores)

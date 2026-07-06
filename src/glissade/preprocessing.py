@@ -63,6 +63,7 @@ def read_data(db_file : str, denovo_file : str):
     denovo_df['file_stem'] = dn_stems
     n_before = len(denovo_df)
     denovo_df = denovo_df.dropna(subset=['scan'])
+    denovo_df = denovo_df[denovo_df['file_stem'] != '']
     denovo_df['scan'] = denovo_df['scan'].astype(int)
     if len(denovo_df) < n_before:
       print(f"  Dropped {n_before - len(denovo_df)} Casanovo rows with unparseable spectra_ref")
