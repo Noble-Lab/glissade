@@ -171,7 +171,7 @@ def main():
     json.dump({'n_matched': len(matched_scores), 'n_external': len(external_scores)}, f)
 
   print(f'--- Running FDR control on {len(external_scores)} external peptides using {len(matched_scores)} matched scores ---')
-  fdrs, peps, scores = run_procedure(matched_scores, external_scores, external_peps, n_boots = 250)
+  fdrs, peps, scores = run_procedure(matched_scores, external_scores, external_peps, n_boots=n_bootstraps)
   fdrs = compute_fdr_transform(fdrs)
   write_results(peps, fdrs, scores)
   

@@ -47,15 +47,22 @@ def read_data(db_file : str, denovo_file : str):
               run_map[m.group(1)] = os.path.splitext(os.path.basename(m.group(2).replace('file://', '').strip()))[0]
     denovo_df = pd.read_csv(denovo_file, sep='\t', skiprows=skiprows)
     def _parse_scan(ref):
+      ref = str(ref) if ref is not None else ''
       m = re.search(r'scan=(\d+)', ref)
       return int(m.group(1)) if m else None
     def _parse_stem(ref):
+      ref = str(ref) if ref is not None else ''
       m = re.match(r'(ms_run\[\d+\])', ref)
       return run_map.get(m.group(1), '') if m else ''
     dn_scans = [_parse_scan(x) for x in denovo_df['spectra_ref']]
     dn_stems = [_parse_stem(x) for x in denovo_df['spectra_ref']]
     denovo_df['scan'] = dn_scans
     denovo_df['file_stem'] = dn_stems
+    n_before = len(denovo_df)
+    denovo_df = denovo_df.dropna(subset=['scan'])
+    denovo_df['scan'] = denovo_df['scan'].astype(int)
+    if len(denovo_df) < n_before:
+      print(f"  Dropped {n_before - len(denovo_df)} Casanovo rows with unparseable spectra_ref")
     denovo_df = denovo_df.rename(columns={'search_engine_score[1]': 'denovo_score', 'sequence': 'denovo_peptide'})
 
   else:
