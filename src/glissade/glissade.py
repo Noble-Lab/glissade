@@ -1,15 +1,16 @@
+import json
 import pandas as pd
 import numpy as np
-import re 
+import re
 import pickle
 import sys
 import argparse
-import warnings 
+import warnings
 import matplotlib.pyplot as plt
 from scipy.stats import binomtest
 
-from preprocessing import read_data, align_to_reference, seperate_scores
-from pava import alpha_minimize, mixture_sanity_check, _ecdf_on_grid
+from .preprocessing import read_data, align_to_reference, seperate_scores
+from .pava import alpha_minimize, mixture_sanity_check, _ecdf_on_grid
 
 def find_minima_sig(external_score_sample : np.array, matched_scores : np.array):
   """
@@ -149,21 +150,32 @@ def main():
   parser.add_argument("database_results")
   parser.add_argument("fasta_file")
   parser.add_argument("-n", "--n_bootstraps", type= int, default= 100, required=False, help="Number of bootstrap samples to perform")
+  parser.add_argument("--fdr", type=float, default=0.01, required=False, help="FDR threshold for database search results used for calibration (default: 0.01)")
   args = parser.parse_args(args=sys.argv[1:])
-  
+
   denovo_results = args.denovo_results
   database_results = args.database_results
   fasta_file = args.fasta_file
   n_bootstraps = args.n_bootstraps
 
-  print('Reading search results and aligning to reference...')
+  print('--- Reading input files ---')
   joined_df = read_data(database_results, denovo_results)
-  labeled_df = align_to_reference(joined_df, fasta_file)
+
+  print('--- Aligning to reference and applying FDR threshold ---')
+  labeled_df = align_to_reference(joined_df, fasta_file, database_fdr_threshold=args.fdr)
+
+  print('--- Collapsing to peptide level ---')
   matched_scores, external_scores, external_peps = seperate_scores(labeled_df)
-  print(f"Total matched scores: {len(matched_scores)}")
-  
-  print(f"Performing FDR control on {len(external_scores)} external peptides from de novo sequencing")
-  fdrs, peps, scores = run_procedure(matched_scores, external_scores, external_peps, n_boots = 250)
+
+  with open('glissade_stats.json', 'w') as f:
+    json.dump({'n_matched': len(matched_scores), 'n_external': len(external_scores)}, f)
+
+  print(f'--- Running FDR control on {len(external_scores)} external peptides using {len(matched_scores)} matched scores ---')
+  if len(matched_scores) == 0:
+    raise ValueError("No matched peptides found for calibration. Try lowering --fdr or checking that Casanovo and Percolator inputs overlap.")
+  if len(external_scores) == 0:
+    raise ValueError("No external peptides found. Nothing to score.")
+  fdrs, peps, scores = run_procedure(matched_scores, external_scores, external_peps, n_boots=n_bootstraps)
   fdrs = compute_fdr_transform(fdrs)
   write_results(peps, fdrs, scores)
   
@@ -171,3 +183,6 @@ def main():
   # peptides, peptide_fdrs, scores = annotate_results(external_peps, external_scores, fdrs, grid)
   # peptide_fdrs = compute_fdr_transform(peptide_fdrs)
   # write_results(peptides, peptide_fdrs, scores)
+
+if __name__ == '__main__':
+  main()
