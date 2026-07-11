@@ -66,15 +66,19 @@ def find_minima_sig(external_score_sample : np.array, matched_scores : np.array)
        current_interval = current_interval[index:-index]
 
 def run_procedure(alt, x_mix, peps, n_boots = 250):
-    x0 = -0.04
-    x0 = find_minima_sig(x_mix, alt)
-    print("Inferred x0:", x0)
-
-    alpha_lo0, alpha_hi0 = 0.01, 0.99 
-    alpha_hat, H_hat, grid_x, info = alpha_minimize(x_mix, alt, x0, alpha_tol=2e-3, tol_mode='bootstrap',  
-                                                    B=n_boots, per_check_delta=0.05,  max_checks=30, random_state=1966, 
-                                                    initial_bracket=(alpha_lo0, alpha_hi0), verbose=False)
-    
+    alpha_hat, x0_hat, H_hat, G_hat, grid_x, info = alpha_minimize(
+        x_mix,
+        alt,
+        min_mix_tail=150,
+        min_alt_tail=100,
+        alpha_tol=5e-3,
+        alpha_bounds=(0.02, 0.85),
+        B=750,
+        cdf_delta=0.01,
+        random_state=1966,
+        verbose=False,
+    )
+    print("Inferred x0:", x0_hat)
     print("Inferred pi_0:", 1-alpha_hat)
     
     Gm = _ecdf_on_grid(np.sort(alt), grid_x)
@@ -84,7 +88,6 @@ def run_procedure(alt, x_mix, peps, n_boots = 250):
         f"{'(PASS)' if res['pass_test'] else '(FAIL)'}"
         f"{'' if res.get('p_value') is None else f'  p≈{res['p_value']:.3f}'}\n")
     
-
     emp_correct = alt
 
     fdrs = []
