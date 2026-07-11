@@ -73,7 +73,7 @@ def run_procedure(alt, x_mix, peps, n_boots = 250):
         min_alt_tail=100,
         alpha_tol=5e-3,
         alpha_bounds=(0.02, 0.85),
-        B=750,
+        B=n_boots,
         cdf_delta=0.01,
         random_state=1966,
         verbose=False,
@@ -83,7 +83,7 @@ def run_procedure(alt, x_mix, peps, n_boots = 250):
     
     Gm = _ecdf_on_grid(np.sort(alt), grid_x)
     Fn = _ecdf_on_grid(np.sort(x_mix), grid_x)
-    res = mixture_sanity_check(Fn, Gm, H_hat, alpha_hat, grid_x, mode='bootstrap', delta=0.05, B=400, rng=np.random.default_rng(7))
+    res = mixture_sanity_check(Fn, Gm, H_hat, alpha_hat, grid_x, delta=0.05, B=400, rng=np.random.default_rng(1966))
     print(f"\n[mixture check] D_ks={res['D_ks']:.4g}  crit={res['crit']:.4g}  "
         f"{'(PASS)' if res['pass_test'] else '(FAIL)'}"
         f"{'' if res.get('p_value') is None else f'  p≈{res['p_value']:.3f}'}\n")
@@ -166,7 +166,7 @@ def main():
   print(f"Total matched scores: {len(matched_scores)}")
   
   print(f"Performing FDR control on {len(external_scores)} external peptides from de novo sequencing")
-  fdrs, peps, scores = run_procedure(matched_scores, external_scores, external_peps, n_boots = 250)
+  fdrs, peps, scores = run_procedure(matched_scores, external_scores, external_peps, n_boots = 750)
   fdrs = compute_fdr_transform(fdrs)
   write_results(peps, fdrs, scores)
   
