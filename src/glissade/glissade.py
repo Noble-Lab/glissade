@@ -12,7 +12,7 @@ from glissade.preprocessing import read_data, align_to_reference, seperate_score
 from glissade.pava3 import alpha_minimize, tool_tail_decision
 
 def run_procedure(emp_correct, x_mix, peps, n_boots = 1000):
-    alpha_hat, x0_hat, H_hat, G_hat, grid_x, fit_info = alpha_minimize(x_mix, emp_correct, alpha_tol=0.01, B=n_boots, deltas=(0.01, 0.005), cdf_delta=0.01, flat_delta=0.1, min_mix_tail=200, min_alt_tail=100, mix_tail_quantile_cap=0.9, max_checks=50, random_state=1966, x0_tol=0.01, shape_weight_gamma=6.0)
+    alpha_hat, x0_hat, H_hat, G_hat, grid_x, fit_info = alpha_minimize(x_mix, emp_correct, alpha_tol=0.001, B=n_boots, deltas=(0.05, 0.01, 0.005), cdf_delta=0.01, flat_delta=0.1, min_mix_tail=200, min_alt_tail=100, mix_tail_quantile_cap=0.9, max_checks=50, random_state=1966, x0_tol=0.01, shape_weight_gamma=6.0)
     if not fit_info.get("success", False):
         raise RuntimeError(f"PAVA3 fit failed: {fit_info}")
     alpha_hat, H_hat, _ = tool_tail_decision('casanovo', alpha_hat, x0_hat, H_hat, G_hat, grid_x, x_mix, emp_correct, B=2000, random_state=1966)
