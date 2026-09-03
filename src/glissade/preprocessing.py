@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 warnings.filterwarnings("ignore")
 
-def read_data(db_file : str, denovo_file : str):
+def read_data(psm_file : str, peptide_file, denovo_file : str, database_fdr_threshold = 0.01):
   """
   Read in database search results and de novo results and join 
   results on scan ID. 
@@ -24,13 +24,31 @@ def read_data(db_file : str, denovo_file : str):
   joined_df: a combined dataframe containing the de novo and database 
               search result for each scan
   """
-  if 'psms.txt' in db_file:
-    db_df = pd.read_csv(db_file, sep='\t')
+  if 'percolator' in psm_file:
+    db_df = pd.read_csv(psm_file, sep='\t')
     db_scans = [int(x.split('_')[2]) for x in db_df['PSMId']]
     db_df['scan'] = db_scans
+  elif False:
+      #FIXME handle other search results
+      pass
   else:
-    #FIXME handle other search results
-    pass
+      print('Unsupported database search file format')
+      exit()
+  
+  if 'percolator' in peptide_file:
+      pep_df = pd.read_csv(peptide_file, sep='\t')
+      peps = [x for x in pep_df['peptide']]
+      qs = [float(x) for x in pep_df['q-value']]
+  elif False:
+      #FIXME handle other search results
+      pass
+  else:
+      print('Unsupported database search file format')
+      exit()
+
+  pep2q = {}
+  for pep,q in zip(peps,qs):
+     pep2q[pep] = q
 
   if '.mztab' in denovo_file:
     with open(denovo_file) as f_in:
@@ -41,13 +59,25 @@ def read_data(db_file : str, denovo_file : str):
     dn_scans = [int(x.split('scan=')[1].split('\t')[0]) for x in denovo_df['spectra_ref']]
     denovo_df['scan'] = dn_scans
     denovo_df = denovo_df.rename(columns={'search_engine_score[1]': 'denovo_score', 'sequence': 'denovo_peptide'})
-
+  elif '.csv' in denovo_file:
+    denovo_df = pd.read_csv(denovo_file)
+    denovo_df = denovo_df.rename(columns={'scan_number': 'scan', 'predictions': 'denovo_peptide'})
+    denovo_df['denovo_score'] = [np.exp(x) for x in denovo_df['log_probs']]
+  elif '.tab' in denovo_file:
+    denovo_df = pd.read_csv(denovo_file, sep='\t')
+    dn_scans = [int(x.split(':')[1]) for x in denovo_df['scan']]
+    denovo_df['scan'] = dn_scans
+    denovo_df['denovo_peptide'] = [str(x).replace(',','').replace('mod','') for x in denovo_df['output_seq']]
+    denovo_df['denovo_score'] = [np.exp(x) for x in denovo_df['output_score']]
   else:
-    #FIXME handle other denovo result formats
-    pass
+     print('Unsupported de novo file format')
+     exit()
 
   joined_df = pd.merge(db_df, denovo_df, on='scan', how='inner')
   joined_df.sort_values(by="denovo_score", ascending=False, inplace=True)
+
+  in_tide = [pep2q[pep] < database_fdr_threshold for pep in joined_df['peptide']]
+  joined_df['in_tide'] = in_tide
 
   return joined_df
 
@@ -76,7 +106,6 @@ def align_to_reference(results_df : pd.DataFrame, reference_file : str, database
               all_prots_string += line[:-1].replace('I','L')
           else:
               all_prots_string += '$'
-  in_tide = [x < database_fdr_threshold for x in results_df['q-value']]
 
   db_peps = [''.join([i for i in re.sub(r'\[.*?\]', '', x[2:-2]) if i.isalpha()]).replace('I','L') for x in results_df['peptide']]
   denovo_peps = [''.join([i for i in re.sub(r'\[.*?\]', '', x) if i.isalpha()]).replace('I','L') for x in results_df['denovo_peptide']]
@@ -85,7 +114,6 @@ def align_to_reference(results_df : pd.DataFrame, reference_file : str, database
   in_reference = [x in all_prots_string for x in denovo_peps]
 
   results_df['in_reference'] = in_reference
-  results_df['in_tide'] = in_tide
   results_df['agrees'] = agrees
   return results_df
 
@@ -115,7 +143,8 @@ def seperate_scores(labeled_df : pd.DataFrame, min_length : int = 8):
 
   matched_peps = matched_df.groupby('denovo_peptide')['denovo_score'].max()
   external_peps = external_df.groupby('denovo_peptide')['denovo_score'].max()
-
   matched_scores =  np.log(matched_peps.values)
+  matched_scores.sort()
   external_scores =  np.log(external_peps.values)
-  return matched_scores, external_scores, list(external_peps.index)
+  sidxs = np.argsort(external_scores)[::-1]
+  return matched_scores[::-1], np.array(external_scores)[sidxs], np.array(external_peps.index)[sidxs]

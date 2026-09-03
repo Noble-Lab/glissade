@@ -8,107 +8,36 @@ import warnings
 import matplotlib.pyplot as plt
 from scipy.stats import binomtest
 
-from preprocessing import read_data, align_to_reference, seperate_scores
-from pava import alpha_minimize, mixture_sanity_check, _ecdf_on_grid
+from glissade.preprocessing import read_data, align_to_reference, seperate_scores
+from glissade.pava3 import alpha_minimize, tool_tail_decision
 
-def find_minima_sig(external_score_sample : np.array, matched_scores : np.array):
-  """
-  Find the crossover point x_0 in the distribution of external scores
-
-  Parameters
-  ----------
-  external_score_sample: A list of external scores  
-  matched_scores: A list of matched scores 
-
-  Returns
-  -------
-  x_0: The score corresponding to the inferred crossover point in the external score distribution 
-  """
-  n_s = 50
-  right_bin_edge = max(external_score_sample)
-  left_bin_edge = list(sorted(matched_scores))[int(len(matched_scores)/10)]
-  current_interval = list(sorted([i for i in external_score_sample if i >= left_bin_edge]))
-  
-  while True: 
-    left_third = left_bin_edge + (right_bin_edge - left_bin_edge)/3
-    right_third = left_bin_edge + 2*(right_bin_edge - left_bin_edge)/3
-
-    num_left = 0
-    num_middle = 0
-    num_right = 0 
-
-    for i in current_interval:
-        if i <= left_third:
-          num_left += 1
-        elif i <= right_third:
-          num_middle += 1
-        else:
-          num_right += 1
+def run_procedure(emp_correct, x_mix, peps, n_boots = 1000):
+    alpha_hat, x0_hat, H_hat, G_hat, grid_x, fit_info = alpha_minimize(x_mix, emp_correct, alpha_tol=0.01, B=n_boots, deltas=(0.01, 0.005), cdf_delta=0.01, flat_delta=0.1, min_mix_tail=200, min_alt_tail=100, mix_tail_quantile_cap=0.9, max_checks=50, random_state=1966, x0_tol=0.01, shape_weight_gamma=6.0)
+    if not fit_info.get("success", False):
+        raise RuntimeError(f"PAVA3 fit failed: {fit_info}")
+    alpha_hat, H_hat, _ = tool_tail_decision('casanovo', alpha_hat, x0_hat, H_hat, G_hat, grid_x, x_mix, emp_correct, B=2000, random_state=1966)
+    print("Inferred pi0:", 1-alpha_hat)
     
-    left_sig = binomtest(num_left, len(current_interval), p=1/3, alternative='greater').pvalue
-    mid_sig = binomtest(num_middle, len(current_interval), p=1/3, alternative='greater').pvalue
-    right_sig = binomtest(num_right, len(current_interval), p=1/3, alternative='greater').pvalue
-
-    if left_sig < 0.05 or mid_sig < 0.05: 
-       index = int(min(n_s, len(current_interval)/3))
-       left_bin_edge = current_interval[index]
-       current_interval = current_interval[index:]
-    elif right_sig < 0.05: 
-       index = int(min(n_s, len(current_interval)/3))
-       right_bin_edge = current_interval[-index]
-       current_interval = current_interval[:-index]
-    elif len(current_interval) < n_s:
-       return current_interval[int(len(current_interval)/2)]
-    else: 
-       index = int(min(n_s, len(current_interval)/3))
-       left_bin_edge = current_interval[index]
-       right_bin_edge = current_interval[-index]
-       current_interval = current_interval[index:-index]
-
-def run_procedure(alt, x_mix, peps, n_boots = 250):
-    alpha_hat, x0_hat, H_hat, G_hat, grid_x, info = alpha_minimize(
-        x_mix,
-        alt,
-        min_mix_tail=150,
-        min_alt_tail=100,
-        alpha_tol=5e-3,
-        alpha_bounds=(0.02, 0.85),
-        B=n_boots,
-        cdf_delta=0.01,
-        random_state=1966,
-        verbose=False,
-    )
-    print("Inferred x0:", x0_hat)
-    print("Inferred pi_0:", 1-alpha_hat)
-    
-    Gm = _ecdf_on_grid(np.sort(alt), grid_x)
-    Fn = _ecdf_on_grid(np.sort(x_mix), grid_x)
-    res = mixture_sanity_check(Fn, Gm, H_hat, alpha_hat, grid_x, delta=0.05, B=400, rng=np.random.default_rng(1966))
-    print(f"\n[mixture check] D_ks={res['D_ks']:.4g}  crit={res['crit']:.4g}  "
-        f"{'(PASS)' if res['pass_test'] else '(FAIL)'}"
-        f"{'' if res.get('p_value') is None else f'  p≈{res['p_value']:.3f}'}\n")
-    
-    emp_correct = alt
-
     fdrs = []
     scores = []
     ordered_peps = []
     total = 0
     num_correct = 1
-    for score,pep in zip(x_mix[::-1], peps[::-1]):
+    for score,pep in zip(x_mix, peps):
         total += 1
 
-        while num_correct < len(emp_correct) and score <= emp_correct[-num_correct]:
+        while num_correct < len(emp_correct) and score <= emp_correct[num_correct]:
             num_correct += 1
         
-        true_count_hat = ((num_correct-1) / len(emp_correct)) * ((alpha_hat) * len(x_mix))
+        true_count_hat = ((num_correct) / len(emp_correct)) * ((alpha_hat) * len(x_mix))
 
         scores.append(score)
         ordered_peps.append(pep)
         fdr = (total-true_count_hat) / (total)
         if fdr < 0:
-            fdr += 10
+            fdr = np.inf
         fdrs.append(fdr)
+        # print(pep, score, fdr)
     
     return fdrs[::-1], ordered_peps[::-1], scores[::-1]
 
@@ -144,33 +73,31 @@ def write_results(peptides, peptide_fdrs, scores):
   """
   res = pd.DataFrame({"Peptide":peptides, "Score":scores, "q-value":peptide_fdrs})
   res.sort_values(by='Score', ascending=False, inplace=True)
-  res.to_csv('peptide.tsv', sep='\t', index=False)
-
+  res.to_csv('glissade_discoveries.tsv', sep='\t', index=False)
+   
 def main():
   parser=argparse.ArgumentParser()
   parser.add_argument("denovo_results")
-  parser.add_argument("database_results")
+  parser.add_argument("database_psm_results")
+  parser.add_argument("database_peptide_results")
   parser.add_argument("fasta_file")
-  parser.add_argument("-n", "--n_bootstraps", type= int, default= 100, required=False, help="Number of bootstrap samples to perform")
+  parser.add_argument("-n", "--n_bootstraps", type= int, default= 1000, required=False, help="Number of bootstrap samples to perform")
   args = parser.parse_args(args=sys.argv[1:])
   
   denovo_results = args.denovo_results
-  database_results = args.database_results
+  database_psm_results = args.database_psm_results
+  database_peptide_results = args.database_peptide_results
   fasta_file = args.fasta_file
   n_bootstraps = args.n_bootstraps
 
   print('Reading search results and aligning to reference...')
-  joined_df = read_data(database_results, denovo_results)
+  joined_df = read_data(database_psm_results, database_peptide_results, denovo_results)
   labeled_df = align_to_reference(joined_df, fasta_file)
   matched_scores, external_scores, external_peps = seperate_scores(labeled_df)
   print(f"Total matched scores: {len(matched_scores)}")
   
   print(f"Performing FDR control on {len(external_scores)} external peptides from de novo sequencing")
-  fdrs, peps, scores = run_procedure(matched_scores, external_scores, external_peps, n_boots = 750)
+  fdrs, peps, scores = run_procedure(matched_scores, external_scores, external_peps, n_boots = n_bootstraps)
   fdrs = compute_fdr_transform(fdrs)
   write_results(peps, fdrs, scores)
-  
-  # fdrs, grid, _ = run_bootstraps(matched_scores, external_scores, n_bootstraps = n_bootstraps, plot_figs=False)
-  # peptides, peptide_fdrs, scores = annotate_results(external_peps, external_scores, fdrs, grid)
-  # peptide_fdrs = compute_fdr_transform(peptide_fdrs)
-  # write_results(peptides, peptide_fdrs, scores)
+
